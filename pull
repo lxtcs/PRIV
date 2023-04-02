@@ -1,0 +1,549 @@
+# import requests
+# import secrets
+# import http.client
+# import json
+#
+# conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
+# payload = json.dumps({
+#   "identifier": secrets.LOGIN,
+#   "password": secrets.PASSWORD,
+#   "accountId": "156642989204395166",
+#   "encryptionKey": "false"
+# })
+# headers = {
+#   'X-CAP-API-KEY': secrets.LIVE_API_KEY,
+#   'Content-Type': 'application/json',
+# # 'CST': 'CST_TOKEN'
+# }
+# conn.request("POST", "/api/v1/session", payload, headers)
+# res = conn.getresponse()
+# data = res.read()
+# print(data.decode("utf-8"))
+# conn.close()
+import requests
+import json
+import os
+import numpy
+import pandas as pd
+
+import login_details
+
+try:
+    from types import SimpleNamespace as Namespace
+except ImportError:
+    # Python 2.x fallback
+    from argparse import Namespace
+
+
+def open_session_unencrypted(api_key, identifier, password):
+    print("LOGGING IN...")
+    headers = {
+        'X-CAP-API-KEY': api_key,
+        'Content-Type': 'application/json',
+    }
+    payload = dict(identifier=identifier, password=password, encryptionKey="false")
+    response = requests.request("POST",
+                                f"{base_url}/api/v1/session",
+                                headers=headers, json=payload)
+
+    response_header = response.headers
+    response_payload = response.content
+    response_raw = json.loads(response_payload)
+    if 'errorCode' in response_raw:
+
+        print("ERROR")
+        print(response_raw['errorCode'])
+        response_header = False
+        global session_open
+        session_open = False
+
+    else:
+        session_open = True
+        print("CONNECTION SUCCESSFUL\n")
+        print("------------------------------------------------\n"
+              f"SERVER TIME:    {response_header['Date']}\n"
+              f"CST:            {response_header['CST']}\n"
+              f"TOKEN:          {response_header['X-SECURITY-TOKEN']}\n"
+              f"------------------------------------------------\n")
+
+        with open("cst-token.txt", "w") as token_file:
+            token_file.write(f"X-SECURITY-TOKEN:{response_header['X-SECURITY-TOKEN']};"
+                             f"CST:{response_header['CST']}")
+
+    return response_header
+
+
+def header_fill():
+    with open("cst-token.txt") as token_file:
+        header_update = {}
+        __token_file = token_file.read()
+        (__token, __cst) = __token_file.split(sep=";")
+        (__token_key, __token_val) = __token.split(sep=":")
+        (__cst_key, __cst_val) = __cst.split(sep=":")
+        header_update[__token_key] = __token_val
+        header_update[__cst_key] = __cst_val
+    return header_update
+
+
+def close_session():
+    headers = {}
+    payload = ""
+    headers.update(header_fill())
+    if check_session_opened():
+        response = requests.request("DELETE",
+                                    f"{base_url}/api/v1/session",
+                                    headers=headers, json=payload)
+        response_payload = json.loads(response.content)
+
+        print("LOGGING OUT.")
+        print("...")
+        try:
+            if response_payload['status'] == 'SUCCESS':
+                global session_open
+                session_open = False
+                print("CONNECTION CLOSED")
+                print("------------------------------------------------")
+
+        except KeyError:
+            pass
+
+
+def check_session_opened():
+    global session_open
+    session_open = False
+    headers = {}
+    payload = ""
+    headers.update(header_fill())
+
+    response = requests.request("GET", f"{base_url}/api/v1/ping",
+                                headers=headers, json=payload)
+    response_payload = json.loads(response.content)
+    response_header = response.headers
+    if response.status_code == 200:
+        try:
+            if response_payload['status'] == 'OK':
+                session_open = True
+
+        except KeyError:
+            if 'errorCode' in response_payload:
+                session_open = False
+
+    if not response.status_code == 200:
+        session_open = False
+
+    return session_open, response_header
+
+
+def market_available(market_id):
+    print("         Searching for Market-ID...")
+    _market = market_id
+    headers = {}
+    payload = ""
+    headers.update(header_fill())
+
+    response = requests.request("GET", f"{base_url}/api/v1/markets/{_market.upper()}",
+                                headers=headers, json=payload)
+    status_code = response.status_code
+    _market_found = False
+
+    if status_code == 200:
+        _market_found = True
+        print(f"         Market found.")
+    if not status_code == 200:
+        _market_found = False
+        print(f"         Market not found, try again. (STATUS CODE: {status_code})")
+
+    return _market_found
+
+
+# def market_search():
+
+
+def get_data(start, end, res, epic):
+    headers = {
+
+    }
+    payload = ""
+    headers.update(header_fill())
+
+    __response = requests.request("GET", f"{base_url}/api/v1/prices/"
+                                  f"{epic}?resolution={res}&max=1000&from={start}&to={end}", headers=headers,
+                                  json=payload)
+    response = {
+        'status-code': __response.status_code,
+        'content': json.loads(__response.content)
+    }
+    return response
+
+
+def error_check(data_input):
+    if 'errorCode' in data_input.status_code():
+        print("ERROR")
+        if data_input['errorCode'] == 'error.invalid.daterange':
+            print("RANGE START")
+            print(date_from)
+            print(date_to)
+            print("RANGE END")
+
+        if data_input['errorCode'] == 'error.invalid.from':
+            print("FROM")
+            print(date_from)
+            print("END OF ERROR MESSAGE")
+        print(f"SERVER RESPONSE: {data_input['errorCode']}")
+
+
+def data_feedback(data_input):
+    try:
+        __statuscode = data_input['status-code']
+        if not __statuscode == 200:
+            if __statuscode == 404:
+                print(f"No Data found for {market} "
+                      f"{loop_date_from['year']}/{loop_date_from['month']}/{loop_date_from['day']} "
+                      f"from {hour_form}:00:00 to {hour_to_form}:59:00")
+
+            elif __statuscode == 400:
+                print(f"Invalid Date: "
+                      f"{loop_date_from['year']}/{loop_date_from['month']}/{loop_date_from['day']} "
+                      f"from {hour_form}:00:00 to {hour_to_form}:59:00")
+
+            else:
+                print(f"ERROR {__statuscode}")
+
+        elif __statuscode == 200:
+            print(f"Found data for: {market} "
+                  f"{loop_date_from['year']}/{loop_date_from['month']}/{loop_date_from['day']} "
+                  f"from {hour_form}:00:00 to {hour_to_form}:59:00")
+
+    finally:
+        "Response Error."
+
+
+def print_data(data_input):
+    session_prices_cleaned = prepare_data(data_input)
+    date_from_format = date_from_csv.replace(":", "_")
+    date_to_format = date_to_csv.replace(":", "_")
+    csv_filename = f"{market}_from={date_from_format}_to={date_to_format}_res={interval.upper()}.csv"
+
+    if not os.path.isdir(f"dataset/{market}/{interval.upper()}/{loop_date_from['year']}/{loop_date_from['month']}"):
+        print(f"\nDirectory not found. Creating Directory")
+        os.makedirs(f"dataset/{market}/{interval.upper()}/{loop_date_from['year']}/{loop_date_from['month']}")
+        print(f"Directory 'dataset/{market}/{interval.upper()}/{loop_date_from['year']}/{loop_date_from['month']}/' "
+              f"created.\n")
+
+    session_prices_cleaned.to_csv(path_or_buf=f"dataset/{market}/{interval.upper()}/{loop_date_from['year']}/"
+                                              f"{loop_date_from['month']}/" + csv_filename)
+    print("\b -> Data saved.")
+
+
+def prepare_data(dataframe):
+    open_prices_cleaned = []
+    close_prices_cleaned = []
+    low_prices_cleaned = []
+    high_prices_cleaned = []
+    session_prices_raw = dataframe
+    session_open_prices_raw = session_prices_raw['openPrice']
+    session_close_prices_raw = session_prices_raw['closePrice']
+    session_low_prices_raw = session_prices_raw['lowPrice']
+    session_high_prices_raw = session_prices_raw['highPrice']
+
+    for i in session_open_prices_raw:
+        open_prices_cleaned.append(i['ask'])
+
+    for i in session_close_prices_raw:
+        close_prices_cleaned.append(i['ask'])
+
+    for i in session_low_prices_raw:
+        low_prices_cleaned.append(i['ask'])
+
+    for i in session_high_prices_raw:
+        high_prices_cleaned.append(i['ask'])
+
+    open_prices_dataframe = pd.DataFrame(open_prices_cleaned)
+    close_prices_dataframe = pd.DataFrame(close_prices_cleaned)
+    low_prices_dataframe = pd.DataFrame(low_prices_cleaned)
+    high_prices_dataframe = pd.DataFrame(high_prices_cleaned)
+
+    session_prices_cleaned = session_prices_raw.drop('openPrice', axis=1)
+    session_prices_cleaned = session_prices_cleaned.drop('closePrice', axis=1)
+    session_prices_cleaned = session_prices_cleaned.drop('lowPrice', axis=1)
+    session_prices_cleaned = session_prices_cleaned.drop('highPrice', axis=1)
+    session_prices_cleaned = session_prices_cleaned.drop('snapshotTime', axis=1)
+
+    session_prices_cleaned['openPrice'] = open_prices_dataframe
+    session_prices_cleaned['closePrice'] = close_prices_dataframe
+    session_prices_cleaned['lowPrice'] = low_prices_dataframe
+    session_prices_cleaned['highPrice'] = high_prices_dataframe
+
+    return session_prices_cleaned
+
+
+class DateConversion:
+    def __init__(self, date_input, from_to):
+        self.date_input = date_input
+        if from_to == 0:
+            self.from_to = "From"
+        elif from_to == 1:
+            self.from_to = "To"
+        else:
+            raise ValueError('Wrong types')
+
+    def print_date(self):
+        print(self.date_input)
+
+    def length_check(self):
+        while not str(self.date_input).isdigit():
+            try:
+                self.date_input = int(self.date_input)
+
+            except ValueError:
+                print("     Invalid input. Only numbers allowed.")
+                self.date_input = \
+                    input(f"     {self.from_to} (YYYYMMDD): ")
+        while len(str(self.date_input)) != 8:
+            while not str(self.date_input).isdigit():
+                try:
+                    self.date_input = int(self.date_input)
+
+                except ValueError:
+                    print("     Invalid input. Only numbers allowed. ")
+                    self.date_input = \
+                        input(f"     {self.from_to} (YYYYMMDD): ")
+            if len(str(self.date_input)) == 8:
+                break
+            print("     Wrong Format.")
+            self.date_input = \
+                input(f"     {self.from_to} (YYYYMMDD): ")
+        return self.date_input
+
+    def convert_date(self):
+        self.length_check()
+        year_from = self.date_input[0:4]
+        month_from = self.date_input[4:6]
+        day_from = self.date_input[6:]
+        return year_from, month_from, day_from
+
+    def month_check(self):
+        _date_from = self.convert_date()
+        while int(_date_from[1]) <= 0 or int(_date_from[1]) > 12:
+            print("     MM must have a value of 1 to 12")
+            self.date_input = \
+                input(f"     {self.from_to} (YYYYMMDD): ")
+            _date_from = self.convert_date()
+        date_prc = _date_from
+        return date_prc
+
+    def date_check(self):
+        _date_from = self.month_check()
+        while not 0 <= int(_date_from[2]) <= 31:
+            print("     DD must have a value of 1 to 31")
+            self.date_input = \
+                input(f"     {self.from_to} (YYYYMMDD): ")
+            _date_from = self.month_check()
+        date_prc = _date_from
+        return date_prc
+
+
+print("\nCAPITAL.COM DATAFETCH PROGRAM STARTED")
+print("(C) Tino Schranner 2022\n")
+print("------------------------------------------------")
+
+
+
+base_url = "https://api-capital.backend-capital.com"
+print("Checking for open session...")
+session_open = check_session_opened()
+if not session_open[0]:
+    print("No open session detected.\n")
+    login_response = open_session_unencrypted(login_details.LIVE_API_KEY, login_details.LOGIN, login_details.PASSWORD)
+    if not login_response:
+        print("LOGIN FAILED")
+
+elif session_open[0]:
+    _response_header = session_open[1]
+    print("Open session detected. Login skipped.")
+    print("------------------------------------------------\n")
+    print("------------------------------------------------\n"
+          f"SERVER TIME:    {_response_header['Date']}\n"
+          f"CST:            {_response_header['CST']}\n"
+          f"TOKEN:          {_response_header['X-SECURITY-TOKEN']}\n"
+          f"------------------------------------------------\n")
+
+if session_open:
+    print("Data Pull Parameters:")
+    market = ""
+    market_found = False
+    while not market_found:
+        market = \
+            input("     Epic: ")
+        market_found = market_available(market)
+    market = market.upper()
+
+    date_order_correct = False
+    while not date_order_correct:
+        date_from_input = \
+            input("     From (YYYYMMDD): ")
+        date_from_obj = DateConversion(date_from_input, 0)
+        date_from_tpl = date_from_obj.date_check()
+
+        date_to_input = \
+            input("     To (YYYYMMDD): ")
+        date_to_obj = DateConversion(date_to_input, 1)
+        date_to_tpl = date_to_obj.date_check()
+
+        date_from_string = str(date_from_tpl[0]) + str(date_from_tpl[1]) + str(date_from_tpl[2])
+        date_to_string = str(date_to_tpl[0]) + str(date_to_tpl[1]) + str(date_to_tpl[2])
+
+        if int(date_from_string) <= int(date_to_string):
+            date_order_correct = True
+
+        elif not int(date_from_string) <= int(date_to_string):
+            print("     'From' cannot be later than 'To'.\n")
+
+    interval = \
+        input("     Timeframe (try 'help'): ")
+    interval_values = ("MINUTE", "MINUTE_5", "MINUTE_10", "MINUTE_15", "MINUTE_30", "HOUR", "HOUR_4", "DAY", "WEEK")
+    while interval == 'help':
+        print("     Supported timeframes:")
+        print("", end="     ")
+        x = 1
+        while x < len(interval_values):
+            print(f"{interval_values[x]}", end=", ")
+            x += 1
+
+        interval = \
+            input("\b\b \n\n     Timeframe (try 'help'): ")
+    else:
+        while interval.upper() not in interval_values:
+            print("     UNKNOWN TIMEFRAME. ALLOWED INPUTS:")
+            print("     MINUTE, MINUTE_5, MINUTE_10, MINUTE_15, MINUTE_30, HOUR, HOUR_4, DAY, WEEK")
+            interval = \
+                input("     TIMEFRAME (EXAMPLE: 'MINUTE_5'): ")
+
+    loop_date_from = {
+        'year': str(date_from_tpl[0]),
+        'month': str(date_from_tpl[1]),
+        'day': str(date_from_tpl[2])
+    }
+    loop_date_to = {
+        'year': str(date_to_tpl[0]),
+        'month': str(date_to_tpl[1]),
+        'day': str(date_to_tpl[2])
+    }
+    data_count = 0
+    while int(loop_date_from['year']) <= int(loop_date_to['year']):
+        if int(loop_date_from['year']) != int(loop_date_to['year']):
+            loop_date_to['month'] = 12
+        elif int(loop_date_from['year']) == int(loop_date_to['year']):
+            loop_date_to['month'] = str(date_to_tpl[1])
+        while int(loop_date_from['month']) <= int(loop_date_to['month']):
+            month = int(loop_date_from['month'])
+            if month < 10:
+                month = f"0{month}"
+                loop_date_from['month'] = f"0{int(loop_date_from['month'])}"
+
+            day = 1
+            if int(loop_date_from['month']) == int(loop_date_to['month']) \
+                    and int(loop_date_from['year']) == int(loop_date_to['year']):
+                while int(loop_date_from['day']) <= int(loop_date_to['day']) and session_open:
+                    i = 0
+                    day = int(loop_date_from['day'])
+                    if int(loop_date_from['day']) < 10:
+                        # noinspection PyTypedDict
+                        loop_date_from['day'] = f"0{int(loop_date_from['day'])}"
+                    day += 1
+                    hour = 0
+                    result = []
+                    result_df = pd.DataFrame()
+                    result_df2 = pd.DataFrame()
+                    pd_concat = pd.DataFrame()
+                    date_from_csv = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T00:00:00"
+                    date_to_csv = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T23:59:00"
+                    while hour < 24:
+                        if hour < 10:
+                            hour_form = f"0{hour}"
+                        else:
+                            hour_form = hour
+                        hour_to_form = hour + 11
+                        date_from = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T{hour_form}:00:00"
+                        date_to = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T{hour_to_form}:59:00"
+                        data_api = get_data(date_from, date_to, interval.upper(), market)
+                        data_feedback(data_api)
+                        _data_content = data_api['content']
+                        _data_prices = {}
+                        if 'prices' in _data_content:
+                            _data_prices = _data_content['prices']
+
+                        if data_api['status-code'] == 200:
+                            if result_df.empty:
+                                result_df = pd.DataFrame(_data_prices)
+                            else:
+                                result_df2 = pd.DataFrame(_data_prices)
+                        pd_concat = pd.concat([result_df, result_df2], ignore_index=True)
+                        hour += 12
+                    if not pd_concat.empty:
+                        data_count += 1
+                        print_data(pd_concat)
+                    loop_date_from['day'] = day
+
+            else:
+                while day <= 31:
+                    day = int(loop_date_from['day'])
+                    if int(loop_date_from['day']) < 10:
+                        loop_date_from['day'] = f"0{loop_date_from['day']}"
+                    day += 1
+                    hour = 0
+                    result = []
+                    result_df = pd.DataFrame()
+                    result_df2 = pd.DataFrame()
+                    pd_concat = pd.DataFrame()
+                    date_from_csv = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T00:00:00"
+                    date_to_csv = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T23:59:00"
+                    while hour < 24:
+                        if hour >= 10:
+                            hour_form = hour
+                        else:
+                            hour_form = f"0{hour}"
+
+                        hour_to_form = hour + 11
+                        date_from = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T{hour_form}:00:00"
+                        date_to = f"{loop_date_from['year']}-{month}-{loop_date_from['day']}T{hour_to_form}:59:00"
+                        data_api = get_data(date_from, date_to, interval.upper(), market)
+                        data_feedback(data_api)
+                        _data_content = data_api['content']
+                        _data_prices = {}
+                        if 'prices' in _data_content:
+                            _data_prices = _data_content['prices']
+
+                        if data_api['status-code'] == 200:
+                            if result_df.empty:
+                                result_df = pd.DataFrame(_data_prices)
+                            else:
+                                result_df2 = pd.DataFrame(_data_prices)
+                        pd_concat = pd.concat([result_df, result_df2], ignore_index=True)
+                        hour += 12
+                    if not pd_concat.empty:
+                        data_count += 1
+                        print_data(pd_concat)
+                    loop_date_from['day'] = day
+                loop_date_from['day'] = 1
+            month = int(month) + 1
+            loop_date_from['month'] = month
+
+            if not check_session_opened():
+                break
+        loop_date_from['month'] = 1
+        loop_date_from['year'] = str(int(loop_date_from['year']) + 1)
+
+
+        # session_prices_df = pd.DataFrame(session_prices_cleaned)
+        # (path_or_buf=f"Dax_from={date_from}&to={date_to}.csv")
+
+    print("\n------------------------------------------------\n"
+          "DATA FETCH END\n"
+          f"A total of {data_count} datasets have been created.\n"
+          "------------------------------------------------\n")
+
+    close_session()
+
+
+
